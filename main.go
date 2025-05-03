@@ -11,6 +11,16 @@ import (
 const WindowWidth = 1024
 const WindowHeight = 768
 const MaxBounceAngle = 75.0 * math.Pi / 180.0 // 75 degrees in radians
+const WinScore = 21                           // Score needed to win the game
+
+type GameState int
+
+const (
+	TitleScreen GameState = iota
+	GameplayScreen
+	PauseScreen
+	EndGameScreen
+)
 
 type Renderer interface {
 	Render()
@@ -105,8 +115,8 @@ type Game struct {
 	Ball        Ball
 	Net         Net
 	ScoreBoard  ScoreBoard
-	Over        bool
-	Paused      bool
+	State       GameState
+	Winner      PlayerID
 }
 
 func (g *Game) ResetBall(targetPlayer PlayerID) {
@@ -158,9 +168,9 @@ func NewGame() Game {
 			Left:  0,
 			Right: 0,
 		},
+		State: TitleScreen,
 	}
 
-	// Randomly choose which player to target initially
 	targetPlayer := PlayerID(Left)
 	if rand.Float32() > 0.5 {
 		targetPlayer = PlayerID(Right)
@@ -172,88 +182,169 @@ func NewGame() Game {
 }
 
 func (g *Game) Update() {
-	paddleSpeed := float32(600.0)
-	deltaTime := rl.GetFrameTime()
-	frameSpeed := paddleSpeed * deltaTime
-
-	if rl.IsKeyDown(rl.KeyW) {
-		g.PaddleLeft.Position.Y -= frameSpeed
-	}
-	if rl.IsKeyDown(rl.KeyS) {
-		g.PaddleLeft.Position.Y += frameSpeed
+	// Handle state transitions based on key presses
+	if rl.IsKeyPressed(rl.KeyP) && g.State == GameplayScreen {
+		g.State = PauseScreen
+		return
+	} else if rl.IsKeyPressed(rl.KeyP) && g.State == PauseScreen {
+		g.State = GameplayScreen
+		return
 	}
 
-	if rl.IsKeyDown(rl.KeyUp) {
-		g.PaddleRight.Position.Y -= frameSpeed
-	}
-	if rl.IsKeyDown(rl.KeyDown) {
-		g.PaddleRight.Position.Y += frameSpeed
-	}
+	switch g.State {
+	case TitleScreen:
+		if rl.IsKeyPressed(rl.KeyEnter) {
+			g.State = GameplayScreen
+		}
+		return
 
-	if g.PaddleLeft.Position.Y < 0 {
-		g.PaddleLeft.Position.Y = 0
-	}
-	if g.PaddleLeft.Position.Y+g.PaddleLeft.Dimensions.Y > float32(WindowHeight) {
-		g.PaddleLeft.Position.Y = float32(WindowHeight) - g.PaddleLeft.Dimensions.Y
-	}
-	if g.PaddleRight.Position.Y < 0 {
-		g.PaddleRight.Position.Y = 0
-	}
-	if g.PaddleRight.Position.Y+g.PaddleRight.Dimensions.Y > float32(WindowHeight) {
-		g.PaddleRight.Position.Y = float32(WindowHeight) - g.PaddleRight.Dimensions.Y
-	}
+	case PauseScreen:
+		return
 
-	g.Ball.Position.X += g.Ball.Velocity.X
-	g.Ball.Position.Y += g.Ball.Velocity.Y
+	case EndGameScreen:
+		if rl.IsKeyPressed(rl.KeyEnter) {
+			*g = NewGame()
+			g.State = GameplayScreen
+		}
+		return
 
-	if g.Ball.Position.Y-g.Ball.Radius <= 0 || g.Ball.Position.Y+g.Ball.Radius >= float32(WindowHeight) {
-		g.Ball.Velocity.Y = -g.Ball.Velocity.Y
-	}
+	case GameplayScreen:
+		paddleSpeed := float32(600.0)
+		deltaTime := rl.GetFrameTime()
+		frameSpeed := paddleSpeed * deltaTime
 
-	if g.Ball.Position.X-g.Ball.Radius <= g.PaddleLeft.Position.X+g.PaddleLeft.Dimensions.X &&
-		g.Ball.Position.Y >= g.PaddleLeft.Position.Y &&
-		g.Ball.Position.Y <= g.PaddleLeft.Position.Y+g.PaddleLeft.Dimensions.Y &&
-		g.Ball.Velocity.X < 0 {
+		if rl.IsKeyDown(rl.KeyW) {
+			g.PaddleLeft.Position.Y -= frameSpeed
+		}
+		if rl.IsKeyDown(rl.KeyS) {
+			g.PaddleLeft.Position.Y += frameSpeed
+		}
 
-		paddleCenter := g.PaddleLeft.Position.Y + (g.PaddleLeft.Dimensions.Y / 2)
-		relativeIntersectY := paddleCenter - g.Ball.Position.Y
+		if rl.IsKeyDown(rl.KeyUp) {
+			g.PaddleRight.Position.Y -= frameSpeed
+		}
+		if rl.IsKeyDown(rl.KeyDown) {
+			g.PaddleRight.Position.Y += frameSpeed
+		}
 
-		normalizedRelativeIntersectionY := relativeIntersectY / (g.PaddleLeft.Dimensions.Y / 2)
+		if g.PaddleLeft.Position.Y < 0 {
+			g.PaddleLeft.Position.Y = 0
+		}
+		if g.PaddleLeft.Position.Y+g.PaddleLeft.Dimensions.Y > float32(WindowHeight) {
+			g.PaddleLeft.Position.Y = float32(WindowHeight) - g.PaddleLeft.Dimensions.Y
+		}
+		if g.PaddleRight.Position.Y < 0 {
+			g.PaddleRight.Position.Y = 0
+		}
+		if g.PaddleRight.Position.Y+g.PaddleRight.Dimensions.Y > float32(WindowHeight) {
+			g.PaddleRight.Position.Y = float32(WindowHeight) - g.PaddleRight.Dimensions.Y
+		}
 
-		bounceAngle := normalizedRelativeIntersectionY * MaxBounceAngle
+		g.Ball.Position.X += g.Ball.Velocity.X
+		g.Ball.Position.Y += g.Ball.Velocity.Y
 
-		ballSpeed := float32(math.Sqrt(float64(g.Ball.Velocity.X*g.Ball.Velocity.X + g.Ball.Velocity.Y*g.Ball.Velocity.Y)))
+		if g.Ball.Position.Y-g.Ball.Radius <= 0 || g.Ball.Position.Y+g.Ball.Radius >= float32(WindowHeight) {
+			g.Ball.Velocity.Y = -g.Ball.Velocity.Y
+		}
 
-		g.Ball.Velocity.X = ballSpeed * float32(math.Cos(float64(bounceAngle)))
-		g.Ball.Velocity.Y = ballSpeed * float32(-math.Sin(float64(bounceAngle)))
-	}
+		// Left paddle front collision
+		if g.Ball.Position.X-g.Ball.Radius <= g.PaddleLeft.Position.X+g.PaddleLeft.Dimensions.X &&
+			g.Ball.Position.X-g.Ball.Radius >= g.PaddleLeft.Position.X &&
+			g.Ball.Position.Y >= g.PaddleLeft.Position.Y &&
+			g.Ball.Position.Y <= g.PaddleLeft.Position.Y+g.PaddleLeft.Dimensions.Y &&
+			g.Ball.Velocity.X < 0 {
 
-	// Right paddle
-	if g.Ball.Position.X+g.Ball.Radius >= g.PaddleRight.Position.X &&
-		g.Ball.Position.Y >= g.PaddleRight.Position.Y &&
-		g.Ball.Position.Y <= g.PaddleRight.Position.Y+g.PaddleRight.Dimensions.Y &&
-		g.Ball.Velocity.X > 0 {
+			paddleCenter := g.PaddleLeft.Position.Y + (g.PaddleLeft.Dimensions.Y / 2)
+			relativeIntersectY := paddleCenter - g.Ball.Position.Y
 
-		paddleCenter := g.PaddleRight.Position.Y + (g.PaddleRight.Dimensions.Y / 2)
-		relativeIntersectY := paddleCenter - g.Ball.Position.Y
+			normalizedRelativeIntersectionY := relativeIntersectY / (g.PaddleLeft.Dimensions.Y / 2)
 
-		normalizedRelativeIntersectionY := relativeIntersectY / (g.PaddleRight.Dimensions.Y / 2)
+			bounceAngle := normalizedRelativeIntersectionY * MaxBounceAngle
 
-		bounceAngle := normalizedRelativeIntersectionY * MaxBounceAngle
+			ballSpeed := float32(math.Sqrt(float64(g.Ball.Velocity.X*g.Ball.Velocity.X + g.Ball.Velocity.Y*g.Ball.Velocity.Y)))
 
-		ballSpeed := float32(math.Sqrt(float64(g.Ball.Velocity.X*g.Ball.Velocity.X + g.Ball.Velocity.Y*g.Ball.Velocity.Y)))
+			g.Ball.Velocity.X = ballSpeed * float32(math.Cos(float64(bounceAngle)))
+			g.Ball.Velocity.Y = ballSpeed * float32(-math.Sin(float64(bounceAngle)))
+		}
 
-		g.Ball.Velocity.X = -ballSpeed * float32(math.Cos(float64(bounceAngle)))
-		g.Ball.Velocity.Y = ballSpeed * float32(-math.Sin(float64(bounceAngle)))
-	}
+		// Left paddle top/bottom collision
+		if g.Ball.Position.X >= g.PaddleLeft.Position.X &&
+			g.Ball.Position.X <= g.PaddleLeft.Position.X+g.PaddleLeft.Dimensions.X {
 
-	// Check for scoring
-	if g.Ball.Position.X < 0 {
-		g.ScoreBoard.Right++
-		g.ResetBall(Right)
-	} else if g.Ball.Position.X > float32(WindowWidth) {
-		g.ScoreBoard.Left++
-		g.ResetBall(Left)
+			// Top edge collision
+			if g.Ball.Position.Y+g.Ball.Radius >= g.PaddleLeft.Position.Y &&
+				g.Ball.Position.Y-g.Ball.Radius <= g.PaddleLeft.Position.Y &&
+				g.Ball.Velocity.Y > 0 {
+				g.Ball.Velocity.Y = -g.Ball.Velocity.Y
+			}
+
+			// Bottom edge collision
+			if g.Ball.Position.Y-g.Ball.Radius <= g.PaddleLeft.Position.Y+g.PaddleLeft.Dimensions.Y &&
+				g.Ball.Position.Y+g.Ball.Radius >= g.PaddleLeft.Position.Y+g.PaddleLeft.Dimensions.Y &&
+				g.Ball.Velocity.Y < 0 {
+				g.Ball.Velocity.Y = -g.Ball.Velocity.Y
+			}
+		}
+
+		// Right paddle front collision
+		if g.Ball.Position.X+g.Ball.Radius >= g.PaddleRight.Position.X &&
+			g.Ball.Position.X+g.Ball.Radius <= g.PaddleRight.Position.X+g.PaddleRight.Dimensions.X &&
+			g.Ball.Position.Y >= g.PaddleRight.Position.Y &&
+			g.Ball.Position.Y <= g.PaddleRight.Position.Y+g.PaddleRight.Dimensions.Y &&
+			g.Ball.Velocity.X > 0 {
+
+			paddleCenter := g.PaddleRight.Position.Y + (g.PaddleRight.Dimensions.Y / 2)
+			relativeIntersectY := paddleCenter - g.Ball.Position.Y
+
+			normalizedRelativeIntersectionY := relativeIntersectY / (g.PaddleRight.Dimensions.Y / 2)
+
+			bounceAngle := normalizedRelativeIntersectionY * MaxBounceAngle
+
+			ballSpeed := float32(math.Sqrt(float64(g.Ball.Velocity.X*g.Ball.Velocity.X + g.Ball.Velocity.Y*g.Ball.Velocity.Y)))
+
+			g.Ball.Velocity.X = -ballSpeed * float32(math.Cos(float64(bounceAngle)))
+			g.Ball.Velocity.Y = ballSpeed * float32(-math.Sin(float64(bounceAngle)))
+		}
+
+		// Right paddle top/bottom collision
+		if g.Ball.Position.X >= g.PaddleRight.Position.X &&
+			g.Ball.Position.X <= g.PaddleRight.Position.X+g.PaddleRight.Dimensions.X {
+
+			// Top edge collision
+			if g.Ball.Position.Y+g.Ball.Radius >= g.PaddleRight.Position.Y &&
+				g.Ball.Position.Y-g.Ball.Radius <= g.PaddleRight.Position.Y &&
+				g.Ball.Velocity.Y > 0 {
+				g.Ball.Velocity.Y = -g.Ball.Velocity.Y
+			}
+
+			// Bottom edge collision
+			if g.Ball.Position.Y-g.Ball.Radius <= g.PaddleRight.Position.Y+g.PaddleRight.Dimensions.Y &&
+				g.Ball.Position.Y+g.Ball.Radius >= g.PaddleRight.Position.Y+g.PaddleRight.Dimensions.Y &&
+				g.Ball.Velocity.Y < 0 {
+				g.Ball.Velocity.Y = -g.Ball.Velocity.Y
+			}
+		}
+
+		// Check for scoring
+		if g.Ball.Position.X < 0 {
+			g.ScoreBoard.Right++
+			g.ResetBall(Left) // Serve to the opponent of the player who scored
+
+			// Check for win condition
+			if g.ScoreBoard.Right >= WinScore {
+				g.Winner = Right
+				g.State = EndGameScreen
+			}
+		} else if g.Ball.Position.X > float32(WindowWidth) {
+			g.ScoreBoard.Left++
+			g.ResetBall(Right) // Serve to the opponent of the player who scored
+
+			// Check for win condition
+			if g.ScoreBoard.Left >= WinScore {
+				g.Winner = Left
+				g.State = EndGameScreen
+			}
+		}
 	}
 }
 
@@ -271,24 +362,148 @@ func main() {
 	}
 }
 
+func (g *Game) RenderTitleScreen() {
+	rl.ClearBackground(rl.RayWhite)
+
+	title := "PADDLE BOUNCE 2"
+	subtitle := "THE REBOUND"
+	instructions := "PRESS ENTER TO START"
+	controls := "CONTROLS:"
+	leftControls := "PLAYER 1: W/S KEYS"
+	rightControls := "PLAYER 2: UP/DOWN KEYS"
+	pauseControl := "PAUSE: P KEY"
+
+	titleFontSize := 60
+	subtitleFontSize := 30
+	instructionsFontSize := 40
+	controlsFontSize := 20
+
+	titleWidth := rl.MeasureText(title, int32(titleFontSize))
+	subtitleWidth := rl.MeasureText(subtitle, int32(subtitleFontSize))
+	instructionsWidth := rl.MeasureText(instructions, int32(instructionsFontSize))
+
+	titleX := (WindowWidth - int(titleWidth)) / 2
+	subtitleX := (WindowWidth - int(subtitleWidth)) / 2
+	instructionsX := (WindowWidth - int(instructionsWidth)) / 2
+
+	rl.DrawText(title, int32(titleX), 150, int32(titleFontSize), rl.Black)
+	rl.DrawText(subtitle, int32(subtitleX), 220, int32(subtitleFontSize), rl.DarkGray)
+	rl.DrawText(instructions, int32(instructionsX), 350, int32(instructionsFontSize), rl.Black)
+
+	controlsX := WindowWidth/2 - 100
+	rl.DrawText(controls, int32(controlsX), 450, int32(controlsFontSize), rl.DarkGray)
+	rl.DrawText(leftControls, int32(controlsX), 480, int32(controlsFontSize), rl.DarkGray)
+	rl.DrawText(rightControls, int32(controlsX), 510, int32(controlsFontSize), rl.DarkGray)
+	rl.DrawText(pauseControl, int32(controlsX), 540, int32(controlsFontSize), rl.DarkGray)
+
+	// Draw a bouncing ball animation
+	time := float32(rl.GetTime())
+	ballX := WindowWidth/2 + int(math.Sin(float64(time*2))*200)
+	ballY := 300 + int(math.Cos(float64(time*2))*50)
+	rl.DrawRectangle(int32(ballX-8), int32(ballY-8), 16, 16, rl.Black)
+}
+
+func (g *Game) RenderPauseScreen() {
+	// First, render the game screen in the background
+	renderers := []Renderer{
+		&g.Net,
+		&g.PaddleLeft,
+		&g.PaddleRight,
+		&g.Ball,
+		&g.ScoreBoard,
+	}
+
+	for _, renderer := range renderers {
+		renderer.Render()
+	}
+
+	// Draw a semi-transparent overlay
+	rl.DrawRectangle(0, 0, int32(WindowWidth), int32(WindowHeight), rl.ColorAlpha(rl.Black, 0.5))
+
+	// Draw pause text
+	pauseText := "GAME PAUSED"
+	instructions := "PRESS P TO RESUME"
+
+	pauseFontSize := 60
+	instructionsFontSize := 30
+
+	pauseWidth := rl.MeasureText(pauseText, int32(pauseFontSize))
+	instructionsWidth := rl.MeasureText(instructions, int32(instructionsFontSize))
+
+	pauseX := (WindowWidth - int(pauseWidth)) / 2
+	instructionsX := (WindowWidth - int(instructionsWidth)) / 2
+
+	rl.DrawText(pauseText, int32(pauseX), 300, int32(pauseFontSize), rl.White)
+	rl.DrawText(instructions, int32(instructionsX), 380, int32(instructionsFontSize), rl.White)
+}
+
+func (g *Game) RenderEndGameScreen() {
+	rl.ClearBackground(rl.RayWhite)
+
+	var winnerText string
+	if g.Winner == Left {
+		winnerText = "PLAYER 1 WINS!"
+	} else {
+		winnerText = "PLAYER 2 WINS!"
+	}
+
+	gameOverText := "GAME OVER"
+	scoreText := fmt.Sprintf("FINAL SCORE: %d - %d", g.ScoreBoard.Left, g.ScoreBoard.Right)
+	instructions := "PRESS ENTER TO PLAY AGAIN"
+
+	gameOverFontSize := 60
+	winnerFontSize := 50
+	scoreFontSize := 30
+	instructionsFontSize := 30
+
+	gameOverWidth := rl.MeasureText(gameOverText, int32(gameOverFontSize))
+	winnerWidth := rl.MeasureText(winnerText, int32(winnerFontSize))
+	scoreWidth := rl.MeasureText(scoreText, int32(scoreFontSize))
+	instructionsWidth := rl.MeasureText(instructions, int32(instructionsFontSize))
+
+	gameOverX := (WindowWidth - int(gameOverWidth)) / 2
+	winnerX := (WindowWidth - int(winnerWidth)) / 2
+	scoreX := (WindowWidth - int(scoreWidth)) / 2
+	instructionsX := (WindowWidth - int(instructionsWidth)) / 2
+
+	rl.DrawText(gameOverText, int32(gameOverX), 200, int32(gameOverFontSize), rl.Black)
+	rl.DrawText(winnerText, int32(winnerX), 280, int32(winnerFontSize), rl.Black)
+	rl.DrawText(scoreText, int32(scoreX), 350, int32(scoreFontSize), rl.DarkGray)
+	rl.DrawText(instructions, int32(instructionsX), 450, int32(instructionsFontSize), rl.Black)
+}
+
+func (g *Game) RenderGameplayScreen() {
+	rl.ClearBackground(rl.RayWhite)
+
+	renderers := []Renderer{
+		&g.Net,
+		&g.PaddleLeft,
+		&g.PaddleRight,
+		&g.Ball,
+		&g.ScoreBoard,
+	}
+
+	for _, renderer := range renderers {
+		renderer.Render()
+	}
+}
+
 func UpdateDrawFrame(game *Game) {
 	game.Update()
 
 	rl.BeginDrawing()
 	defer rl.EndDrawing()
 
-	rl.ClearBackground(rl.RayWhite)
-
-	renderers := []Renderer{
-		&game.Net,
-		&game.PaddleLeft,
-		&game.PaddleRight,
-		&game.Ball,
-		&game.ScoreBoard,
-	}
-
-	for _, renderer := range renderers {
-		renderer.Render()
+	// Render the appropriate screen based on the game state
+	switch game.State {
+	case TitleScreen:
+		game.RenderTitleScreen()
+	case GameplayScreen:
+		game.RenderGameplayScreen()
+	case PauseScreen:
+		game.RenderPauseScreen()
+	case EndGameScreen:
+		game.RenderEndGameScreen()
 	}
 
 	rl.DrawFPS(WindowWidth-100, 10)
